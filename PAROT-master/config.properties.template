@@ -1,0 +1,5 @@
+graphdb.user=YOUR_USERNAME
+graphdb.password=YOUR_PASSWORD
+graphdb.ip=YOUR_IP
+graphdb.port=7200
+graphdb.repo=YOUR_REPO_NAME

@@ -1,0 +1,15 @@
+PAROT-master/docs/con.png
+*.jar
+*.class
+out/
+*.model
+*.bin
+*.mco
+*.crf.ser.gz
+lucene/
+*.aux
+*.bbl
+*.blg
+*.out
+*.spl
+*.synctex.gz
