@@ -1,4 +1,0 @@
-The parot system translates natural language(NL) to SPARQL query. It uses  dependency ruless combined
-with first order logic to generate quaeries compound sentences, negation, scalar adjectives etc.
-Dataset used for evaluation can be downloaded at ftp://ftp.cs.utexas.edu/pub/mooney/nl-ilp-data/geosystem/geobase(We specifically used the dataset that is composed of geography data in the United States)  and https://github.com/ag-sc/QALD/tree/master/9/data(9th challenge on question answering over linked data)
-To use the system to evaluate your queries you should first download parot.jar from the main project directory

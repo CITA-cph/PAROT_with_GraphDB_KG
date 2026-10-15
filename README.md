@@ -19,6 +19,8 @@ Copy `config.properties.template` to `config.properties` and fill in your GraphD
 
 `config.properties` is gitignored and must never be committed.
 
+## Run a query
+see HOW_TO_RUN.md for instructions to run on windows11 
 
 ## LICENSE 
 Licence This project is licensed under the Creative Commons Attribution–NonCommercial–NoDerivatives 4.0 International (CC BY-NC-ND 4.0) licence. You are free to: Share — copy and redistribute the material in any medium or format Under the following conditions: Attribution (BY) — You must give appropriate credit, provide a link to the licence, and indicate if changes were made. NonCommercial (NC) — You may not use the material for commercial purposes. NoDerivatives (ND) — You may not distribute modified versions of the material. The full licence terms are available at: https://creativecommons.org/licenses/by-nc-nd/4.0/
