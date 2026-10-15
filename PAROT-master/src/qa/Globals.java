@@ -14,6 +14,9 @@ import nlp.tool.CoreNLP;
 import nlp.tool.MaltParser;
 import nlp.tool.StanfordParser;
 import nlp.tool.StopWordsList;
+import java.io.FileInputStream;
+import java.util.Properties;
+
 
 public class Globals {
 	// nlp tools
@@ -30,19 +33,15 @@ public class Globals {
 	public static String Dataset = "dbpedia 2016";
 	public static String Version = "0.1.2";
 	public static String GDBsystem = "gStore v0.7.2";
-	
+
 	/*
 	 * evaluationMethod:
 	 * 1. baseline(SQG), does not allow CIRCLE and WRONG edge. The structure may be different by changing the TARGET.
-	 * 2. super SQG, allow CIRCLE and WRONG edge. The structure is decided by DS tree, and can be changed in query evaluation(TOP-K match) stage. 
-	 * */
-	public static int evaluationMethod = 2; 
-	
+	 * 2. super SQG, allow CIRCLE and WRONG edge. The structure is decided by DS tree, and can be changed in query evaluation(TOP-K match) stage.
+	 */
+	public static int evaluationMethod = 2;
+
 	public static String localPath = "./././";
-
-
-	import java.io.FileInputStream;
-	import java.util.Properties;
 
 	// CREDENTIALS - loaded from config.properties (not committed to git)
 	public static String GraphDBUser;
@@ -64,46 +63,52 @@ public class Globals {
 			throw new RuntimeException("Could not load config.properties", e);
 		}
 	}
+	/**
+	 * ADDED: URI of the property that links specimens/structures to their
+	 * measurement nodes in the KG (the first hop in the 2-hop pattern).
+	 * Used by GAnswer.retryWithTwoHop().
+	 */
+	public static String HasPropertyURI = "http://example.org/material/ontology/hasProperty";
 
-	public static void init () 
+	public static void init ()
 	{
 		System.out.println("====== gAnswer2.0 over DBpedia ======");
 
 		long t1, t2, t3, t4, t5, t6, t7, t8, t9;
-		
+
 		t1 = System.currentTimeMillis();
 		coreNLP = new CoreNLP();
-		
+
 		t2 = System.currentTimeMillis();
 		stanfordParser = new StanfordParser();
-		
+
 		t3 = System.currentTimeMillis();
 		maltParser = new MaltParser();
-		
+
 		t4 = System.currentTimeMillis();
 		nerRecognizer = new NERecognizer();
-		
+
 		t5 = System.currentTimeMillis();
 		stopWordsList = new StopWordsList();
-		
+
 		t6 = System.currentTimeMillis();
 		pd = new ParaphraseDictionary();
-		
+
 		t7 = System.currentTimeMillis();
-		try 
-		{	
+		try
+		{
 			EntityFragmentFields.load();
 			RelationFragment.load();
 			TypeFragment.load();
-		} 
+		}
 		catch (Exception e1) {
 			System.out.println("EntityIDs and RelationFragment and TypeFragment loading error!");
 			e1.printStackTrace();
 		}
-		
+
 		t8 = System.currentTimeMillis();
 		dblk = new DBpediaLookup();
-		
+
 		t9 = System.currentTimeMillis();
 		System.out.println("======Initialization======");
 		System.out.println("CoreNLP(Lemma): " + (t2-t1) + "ms.");
@@ -118,7 +123,6 @@ public class Globals {
 		System.out.println("==========================");
 	}
 
-	
 	/**
 	 * Use as system("pause") in C
 	 */

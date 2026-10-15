@@ -129,7 +129,7 @@ public class GAnswer {
 	}
 
 	// -------------------------------------------------------------------------
-	// Shared SSL setup (called once per connection)
+	// Shared SSL + connection helpers
 	// -------------------------------------------------------------------------
 	private static void trustAllSSL() throws Exception {
 		javax.net.ssl.TrustManager[] trustAll = new javax.net.ssl.TrustManager[]{
@@ -204,27 +204,25 @@ public class GAnswer {
 		return lines;
 	}
 
+	// -------------------------------------------------------------------------
+	// Retry level 2: flat query with label-based entity matching
+	// -------------------------------------------------------------------------
 	/**
-	 * ADDED: When the primary query returns 0 results, retry with a label-based
-	 * fallback. Entity URIs in object/subject position are replaced with a
-	 * variable ?_inst that is constrained by rdfs:label CONTAINS matching.
-	 *
-	 * Example: <http://.../Hemp_fiber> becomes
-	 *   ?_inst <rdfs:label> ?_lbl . FILTER(CONTAINS(LCASE(?_lbl), "hemp fiber"))
-	 *
-	 * This returns specimen results (Hemp_fiber_0, Hemp_fiber_1 …) even though
-	 * the resolved URI was the class Hemp_fiber.
+	 * When the primary query returns 0 results, replace concrete entity URIs
+	 * with ?_inst constrained by rdfs:label CONTAINS. This handles the case
+	 * where the resolved entity is a class (Hemp_fiber) but the data lives on
+	 * specimens (Hemp_fiber_0, Hemp_fiber_1 …).
 	 */
 	private Matches retryWithLabelFallback(String primarySparql) {
 		Matches ret = new Matches();
 		try {
-			// Find entity URIs in object position: ?var <pred> <entity> .
 			java.util.Set<String> entityURIs = new java.util.LinkedHashSet<>();
+			// entity in object position: ?var <pred> <entity>
 			java.util.regex.Matcher m1 = java.util.regex.Pattern
 					.compile("\\?\\w+\\s+<[^>]+>\\s+(<http[^>]+>)")
 					.matcher(primarySparql);
 			while (m1.find()) entityURIs.add(m1.group(1));
-			// Find entity URIs in subject position: <entity> <pred> ?var .
+			// entity in subject position: <entity> <pred> ?var
 			java.util.regex.Matcher m2 = java.util.regex.Pattern
 					.compile("(<http[^>]+>)\\s+<[^>]+>\\s+\\?")
 					.matcher(primarySparql);
@@ -234,16 +232,12 @@ public class GAnswer {
 
 			for (String entityURI : entityURIs) {
 				String bare = entityURI.replaceAll("^<|>$", "");
-				// Derive label search term: local name, remove trailing digits, spaces
 				String localName = bare.contains("#")
 						? bare.substring(bare.lastIndexOf('#') + 1)
 						: bare.contains("/") ? bare.substring(bare.lastIndexOf('/') + 1) : bare;
 				String labelTerm = localName.replace("_", " ").toLowerCase().trim();
 
-				// Replace entity URI with ?_inst variable everywhere in the SPARQL
 				String retrySparql = primarySparql.replace(entityURI, "?_inst");
-
-				// Inject label constraint after the opening "where {"
 				String labelFilter =
 						"?_inst <http://www.w3.org/2000/01/rdf-schema#label> ?_lbl .\n"
 						+ "  FILTER(CONTAINS(LCASE(STR(?_lbl)), \""
@@ -252,8 +246,167 @@ public class GAnswer {
 
 				System.out.println("Label-fallback SPARQL:\n" + retrySparql);
 				java.util.List<String> lines = executeQuery(retrySparql);
-				if (lines.size() > 1) {
-					return parseMatches(lines);
+				if (lines.size() > 1) return parseMatches(lines);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return ret;
+	}
+
+	// -------------------------------------------------------------------------
+	// Retry level 3: 2-hop traversal via mat:hasProperty
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Stop-words to strip when deriving predicate search terms from camelCase
+	 * local names. These are common English connectives and overly generic
+	 * domain prefixes that appear in property names but carry no discriminating
+	 * meaning for a CONTAINS search (e.g. "mech_tensileElongationAtBreak" →
+	 * strip "at", "mech" → keep "tensile", "elongation", "break").
+	 */
+	private static final java.util.Set<String> PRED_STOP_WORDS =
+			new java.util.HashSet<>(java.util.Arrays.asList(
+					// English connectives / prepositions / articles
+					"a", "an", "the", "at", "by", "of", "in", "on", "to",
+					"for", "and", "or", "is", "as", "up", "per",
+					// Generic property-name prefixes common in material KGs
+					"has", "mech", "prop", "val", "value", "property",
+					"data", "info", "ref", "type", "id"
+			));
+
+	/**
+	 * Splits a predicate local name (camelCase + underscore) into meaningful
+	 * search tokens by:
+	 *   1. Splitting on underscores.
+	 *   2. Splitting each segment on camelCase boundaries.
+	 *   3. Lower-casing everything.
+	 *   4. Removing stop-words and tokens shorter than 3 characters.
+	 *
+	 * Examples:
+	 *   mech_tensileElongationAtBreak → ["tensile", "elongation", "break"]
+	 *   youngsModulus                 → ["youngs", "modulus"]
+	 *   elongationAtBreak             → ["elongation", "break"]
+	 *   hasVariability                → ["variability"]
+	 */
+	private java.util.List<String> splitPredicateTokens(String localName) {
+		// Split on underscore first, then camelCase within each segment
+		String spaced = localName
+				.replaceAll("([a-z])([A-Z])", "$1 $2")   // camelCase split
+				.replaceAll("([A-Z]+)([A-Z][a-z])", "$1 $2") // handle ACRONYMs
+				.replaceAll("[_\\s]+", " ")
+				.toLowerCase()
+				.trim();
+		java.util.List<String> tokens = new java.util.ArrayList<>();
+		for (String w : spaced.split("\\s+")) {
+			if (w.length() >= 3 && !PRED_STOP_WORDS.contains(w))
+				tokens.add(w);
+		}
+		return tokens;
+	}
+
+	/**
+	 * ADDED: When both the primary flat query and the label fallback return 0
+	 * results, the KG probably stores the value on a measurement node reachable
+	 * via mat:hasProperty (a 2-hop pattern).
+	 *
+	 * This method:
+	 * 1. Extracts the predicate URI from the failed SPARQL.
+	 * 2. Derives meaningful search tokens by splitting camelCase + underscore
+	 *    and removing stop-words:
+	 *      mech_tensileElongationAtBreak → ["tensile","elongation","break"]
+	 *    These are stacked as &&-combined CONTAINS filters on ?_pred so the
+	 *    match is precise without knowing the exact URI in advance.
+	 * 3. Derives the entity label term from the entity URI local name.
+	 * 4. Builds and executes (example for elongation):
+	 *      ?_inst rdfs:label ?_lbl . FILTER(label CONTAINS "hemp fiber")
+	 *      ?_inst <HasPropertyURI> ?_prop .
+	 *      ?_prop ?_pred ?value .
+	 *      FILTER(CONTAINS(LCASE(STR(?_pred)),"tensile")
+	 *          && CONTAINS(LCASE(STR(?_pred)),"elongation")
+	 *          && CONTAINS(LCASE(STR(?_pred)),"break"))
+	 *      FILTER(isLiteral(?value))
+	 */
+	private Matches retryWithTwoHop(String primarySparql) {
+		Matches ret = new Matches();
+		try {
+			// --- Extract predicate URIs (predicate position) ---
+			java.util.Set<String> predicateURIs = new java.util.LinkedHashSet<>();
+			// ?var <PRED> <entity>
+			java.util.regex.Matcher pm1 = java.util.regex.Pattern
+					.compile("\\?\\w+\\s+(<http[^>]+>)\\s+<http")
+					.matcher(primarySparql);
+			while (pm1.find()) predicateURIs.add(pm1.group(1));
+			// <entity> <PRED> ?var
+			java.util.regex.Matcher pm2 = java.util.regex.Pattern
+					.compile("<http[^>]+>\\s+(<http[^>]+>)\\s+\\?")
+					.matcher(primarySparql);
+			while (pm2.find()) predicateURIs.add(pm2.group(1));
+
+			// --- Extract entity URIs (subject/object position) ---
+			java.util.Set<String> entityURIs = new java.util.LinkedHashSet<>();
+			java.util.regex.Matcher em1 = java.util.regex.Pattern
+					.compile("\\?\\w+\\s+<[^>]+>\\s+(<http[^>]+>)")
+					.matcher(primarySparql);
+			while (em1.find()) entityURIs.add(em1.group(1));
+			java.util.regex.Matcher em2 = java.util.regex.Pattern
+					.compile("(<http[^>]+>)\\s+<[^>]+>\\s+\\?")
+					.matcher(primarySparql);
+			while (em2.find()) entityURIs.add(em2.group(1));
+
+			if (predicateURIs.isEmpty() || entityURIs.isEmpty()) return ret;
+
+			// --- Extract SELECT variable name ---
+			java.util.regex.Matcher sm = java.util.regex.Pattern
+					.compile("(?i)select\\s+DISTINCT\\s+(\\?\\w+)")
+					.matcher(primarySparql);
+			String selectVar = sm.find() ? sm.group(1) : "?_value";
+
+			for (String predURI : predicateURIs) {
+				// Derive meaningful predicate search tokens from camelCase local name
+				String predBare = predURI.replaceAll("^<|>$", "");
+				String predLocal = predBare.contains("#")
+						? predBare.substring(predBare.lastIndexOf('#') + 1)
+						: predBare.contains("/") ? predBare.substring(predBare.lastIndexOf('/') + 1) : predBare;
+
+				java.util.List<String> predTokens = splitPredicateTokens(predLocal);
+				if (predTokens.isEmpty()) {
+					System.out.println("Two-hop: no meaningful tokens from predicate local name: " + predLocal + " — skipping");
+					continue;
+				}
+
+				System.out.println("Two-hop predicate tokens: " + predTokens + " (from " + predLocal + ")");
+
+				// Build stacked CONTAINS filter: CONTAINS(...,"tensile") && CONTAINS(...,"elongation") && ...
+				StringBuilder predFilter = new StringBuilder();
+				for (int i = 0; i < predTokens.size(); i++) {
+					if (i > 0) predFilter.append("\n      && ");
+					predFilter.append("CONTAINS(LCASE(STR(?_pred)), \"")
+					           .append(predTokens.get(i).replace("\"", "\\\""))
+					           .append("\")");
+				}
+
+				for (String entityURI : entityURIs) {
+					String bare = entityURI.replaceAll("^<|>$", "");
+					String localName = bare.contains("#")
+							? bare.substring(bare.lastIndexOf('#') + 1)
+							: bare.contains("/") ? bare.substring(bare.lastIndexOf('/') + 1) : bare;
+					String entityLabelTerm = localName.replace("_", " ").toLowerCase().trim();
+
+					String twoHopSparql =
+							"select DISTINCT " + selectVar + " where {\n"
+							+ "  ?_inst <http://www.w3.org/2000/01/rdf-schema#label> ?_lbl .\n"
+							+ "  FILTER(CONTAINS(LCASE(STR(?_lbl)), \""
+							+ entityLabelTerm.replace("\"", "\\\"") + "\"))\n"
+							+ "  ?_inst <" + Globals.HasPropertyURI + "> ?_prop .\n"
+							+ "  ?_prop ?_pred " + selectVar + " .\n"
+							+ "  FILTER(" + predFilter + ")\n"
+							+ "  FILTER(isLiteral(" + selectVar + "))\n"
+							+ "} LIMIT " + Globals.MaxAnswerNum;
+
+					System.out.println("Two-hop fallback SPARQL:\n" + twoHopSparql);
+					java.util.List<String> lines = executeQuery(twoHopSparql);
+					if (lines.size() > 1) return parseMatches(lines);
 				}
 			}
 		} catch (Exception e) {
@@ -262,12 +415,25 @@ public class GAnswer {
 		return ret;
 	}
 
+	// -------------------------------------------------------------------------
+	// Main query execution with 3-level retry chain
+	// -------------------------------------------------------------------------
 	/**
-	 * CHANGED: HTTPS + SSL trust-all + Basic Auth against GraphDB.
-	 * toStringForGStore2() already returns a complete SPARQL 1.1 query
-	 * (with UNION for both triple directions).
-	 * resolveLocalNames() expands <localName> tokens to full URIs.
-	 * ADDED: label-based fallback retry when primary query returns 0 results.
+	 * Executes the SPARQL against GraphDB with a 3-level retry chain:
+	 *
+	 * Level 1 — Primary flat query (toStringForGStore2 output)
+	 *   Works when PAROT correctly resolves both the entity URI and predicate URI.
+	 *
+	 * Level 2 — Label-based flat retry
+	 *   Replaces the concrete entity URI with a label CONTAINS filter.
+	 *   Handles the class-vs-specimen mismatch (Hemp_fiber vs Hemp_fiber_0).
+	 *
+	 * Level 3 — 2-hop traversal via mat:hasProperty
+	 *   Handles KGs where values live on measurement nodes, not directly on
+	 *   the subject. Splits the predicate local name on camelCase + underscore
+	 *   boundaries, strips stop-words, and stacks all meaningful tokens as
+	 *   &&-combined CONTAINS filters so it matches the real KG predicate
+	 *   precisely without knowing its exact URI in advance.
 	 */
 	public Matches getAnswerFromGStore2(Sparql spq) {
 		Matches ret = new Matches();
@@ -277,14 +443,20 @@ public class GAnswer {
 
 			trustAllSSL();
 
+			// Level 1: primary flat query
 			java.util.List<String> lines = executeQuery(sparql);
 			ret = parseMatches(lines);
 
-			// ADDED: if 0 results, retry using rdfs:label CONTAINS matching
-			// so that class-level entities expand to their specimens
+			// Level 2: label-based flat retry
 			if (ret.answersNum == 0 || ret.answers == null) {
 				System.out.println("Primary query empty — retrying with label-based fallback...");
 				ret = retryWithLabelFallback(sparql);
+			}
+
+			// Level 3: 2-hop via mat:hasProperty
+			if (ret.answersNum == 0 || ret.answers == null) {
+				System.out.println("Label fallback empty — retrying with 2-hop property traversal...");
+				ret = retryWithTwoHop(sparql);
 			}
 
 		} catch (Exception e) {
@@ -294,9 +466,12 @@ public class GAnswer {
 		return ret;
 	}
 
+	// -------------------------------------------------------------------------
+	// URI resolution helpers
+	// -------------------------------------------------------------------------
 	/**
-	 * ADDED: Replace all <localName> tokens with full URIs.
-	 * Priority: KG predicate > KG entity > DBpedia entity > fallback.
+	 * Replaces all <localName> tokens in the SPARQL string with full URIs.
+	 * Priority: KG predicate → KG entity → DBpedia entity → fallback (unchanged).
 	 */
 	private String resolveLocalNames(String gstoreBody) {
 		StringBuffer result = new StringBuffer();
