@@ -1,5 +1,7 @@
 PAROT-master/docs/con.png
 *.jar
+!PAROT-master/RAWworkflow/lucene-core-2.9.4.jar
+
 *.class
 out/
 *.model
