@@ -4,3 +4,4 @@
 *.mco filter=lfs diff=lfs merge=lfs -text
 *.gz filter=lfs diff=lfs merge=lfs -text
 PAROT-master/RAWworkflow/lucene-core-2.9.4.jar filter=lfs diff=lfs merge=lfs -text
+PAROT-master/lib/*.jar filter=lfs diff=lfs merge=lfs -text
